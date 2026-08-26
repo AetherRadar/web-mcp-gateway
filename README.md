@@ -82,6 +82,23 @@ chrome://extensions → 开发者模式 → 加载已解压的扩展程序 → �
 - 开启自动批准后，白名单内工具的授权弹窗会被**拟人化节奏**自动点击（避免平台 Bot 检测）；
 - 快捷键 `Ctrl+Shift+Y` 手动核准当前弹窗；审计日志存于 localStorage（最近 200 条）。
 
+## 网页压缩 · 会话接力（Web 版 Magic Context）
+
+Web 模式下对话在 ChatGPT 服务端，无法像本地 agent 那样在进程内做上下文压缩（参考 [magic-context](https://github.com/cortexkit/magic-context) 的后台压缩思路）。本项目把记忆外置到本地文件，等效实现无限上下文：
+
+1. 控制台「会话接力」卡片 → **初始化工作区接力文件**：在 `AGENTS.md` 注入接力协议（coding-tools-mcp 会自动将其作为 `initialize` 的 `instructions` 透传给模型）+ 创建 `PROGRESS.md` 存档模板（目标/已完成/当前状态/下一步/关键文件）；
+2. 长任务中让模型每完成一个里程碑就更新 `PROGRESS.md`（或你说「存档」）；
+3. 上下文将满或被路由到弱模型时，开**新窗口** → 点 **复制新窗口交接提示词** → 粘贴发送，模型 1 次 `read_file PROGRESS.md` 即可恢复全部上下文；
+4. OAuth Token 已默认延长至 7 天（`CODING_TOOLS_MCP_OAUTH_TOKEN_TTL=604800`），配合固定域名可稳定复用，无需频繁重连。
+
+> 本质：magic-context 做「进程内后台压缩」，Web MCP 做「文件外置 + 新窗口接力」。效果等价，成本是新窗口的 1 次文件读取。
+
+## Automations（ChatGPT 定时任务）
+
+1. 使用**固定域名模式**（自有 Cloudflare Tunnel + 永久域名），获得稳定 MCP 地址（`trycloudflare.com` 临时域名重启即变，不适合 Automations）；
+2. 在 ChatGPT 网页版 → Automations → 创建定时任务，提示词中直接调用 MCP 能力，例如：「每晚 9 点通过 MCP 执行 `exec_command: pytest` 并把失败用例汇总发我」；
+3. 7 天 Token 保证周内无需重新授权；配合 `chrome-extension` 自动批准，定时任务可无人值守执行。
+
 ## 认证与安全
 
 - `oauth`（默认，Web 客户端推荐）：OAuth 2.1 授权码 + PKCE，RFC 7591 动态注册，密码由 Gateway 生成并在控制台展示；

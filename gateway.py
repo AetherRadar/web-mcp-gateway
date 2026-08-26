@@ -48,6 +48,44 @@ log_lock = threading.Lock()
 _relay_cache = {"at": 0.0, "result": None}
 _relay_lock = threading.Lock()
 
+RELAY_MARKER = "<!-- web-mcp-gateway:relay -->"
+AGENTS_RELAY_SECTION = f"""{RELAY_MARKER}
+# Web MCP 会话接力协议（由 Web MCP Gateway 注入）
+
+本工作区通过 Web AI 客户端 + MCP 驱动。对话上下文在客户端侧，无法像本地 agent 那样在进程内压缩。
+为对抗长任务导致的上下文膨胀/降智，遵循以下协议：
+
+1. 会话开始：若用户消息包含「继续 / continue / resume / 接力」，先读取 PROGRESS.md，按其中「下一步」继续。
+2. 里程碑更新：每完成一个有意义的阶段（或用户说「存档 / checkpoint」），用 apply_patch 更新 PROGRESS.md：
+   - 目标 / 已完成 / 当前状态 / 下一步 / 关键文件与命令 / 未解决问题
+   - 控制在 80 行以内，超出时压缩旧条目。
+3. 上下文纪律：
+   - 优先 search_text / list_files / read_file(带 start_line/limit) 定位，不要整读大文件；
+   - exec_command 输出用最大字节限制；长输出用 read_output 分页；
+   - 不在对话中粘贴大段文件内容，改为引用路径+行号。
+4. 用户在新窗口发送的交接提示词会指向 PROGRESS.md —— 这是唯一的跨会话记忆载体。
+"""
+
+PROGRESS_TEMPLATE = """# PROGRESS — 会话接力存档
+
+> 由 AI 子代理维护。新会话开始时先读本文件，完成阶段后更新本文件。
+> 对应 Web MCP Gateway 的「网页压缩」方案：对话在 ChatGPT 服务端，外置记忆在本地文件。
+
+- 目标：
+- 已完成：
+- 当前状态：
+- 下一步：
+- 关键文件：
+- 常用命令：
+- 未解决问题：
+"""
+
+BOOTSTRAP_PROMPT = (
+    "继续之前的任务：请调用 MCP 工具 read_file 读取 PROGRESS.md（在工作区根目录），"
+    "理解「目标 / 当前状态 / 下一步」，然后直接从「下一步」继续执行。不要重新探索整个仓库，"
+    "除非 PROGRESS.md 信息不足。开始前先用一句话复述你理解的任务状态。"
+)
+
 
 def write_ui_log(message):
     timestamp = time.strftime("%H:%M:%S")
@@ -287,6 +325,19 @@ input[readonly] { color: var(--text-muted); cursor: default; }
                 </div>
                 <p class="hint" id="hintBox"></p>
             </div>
+
+            <div class="panel-card" id="contextCard">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <label style="margin:0;">会话接力 · 网页压缩（Web 版 Magic Context）</label>
+                    <span id="contextStatus" style="font-size:0.78rem;color:var(--text-muted);"></span>
+                </div>
+                <p class="hint">对话在 ChatGPT 服务端，无法在进程内压缩。外置记忆到本地文件：<code>AGENTS.md</code> 注入接力协议 + <code>PROGRESS.md</code> 存档。新窗口粘贴交接提示词即可 1 次文件读取恢复上下文。</p>
+                <div class="input-row">
+                    <button class="btn" style="flex:1;" onclick="initRelay()">初始化工作区接力文件</button>
+                    <button class="btn" style="flex:1;" onclick="copyBootstrap()">复制新窗口交接提示词</button>
+                </div>
+                <p class="hint">配合固定域名 + 7 天 Token，ChatGPT Automations 定时任务也能长期稳定触发，无需频繁重连。</p>
+            </div>
         </div>
 
         <div class="console-panel">
@@ -512,6 +563,45 @@ function checkRelay() {
         showToast(r.ok ? "服务器在线" : "服务器不可达");
     })
     .catch(() => showToast("检测请求失败"));
+}
+
+function initRelay() {
+    const workspace = document.getElementById('workspaceInput').value.trim();
+    if (!workspace) { alert("请先选择或输入工作区目录路径。"); return; }
+    fetch('/api/context/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspace })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (data.success) {
+            let msg = [];
+            if (data.agentsCreated) msg.push("AGENTS.md 已创建");
+            else if (data.agentsAppended) msg.push("AGENTS.md 已追加接力协议");
+            else msg.push("AGENTS.md 已存在");
+            if (data.progressCreated) msg.push("PROGRESS.md 已创建");
+            else msg.push("PROGRESS.md 已存在");
+            document.getElementById('contextStatus').textContent = msg.join(" · ");
+            showToast(msg.join("，"));
+        } else {
+            alert("初始化失败: " + data.error);
+        }
+    })
+    .catch(() => alert("网络错误：无法联系 Gateway。"));
+}
+
+function copyBootstrap() {
+    fetch('/api/context/prompt')
+    .then(res => res.json())
+    .then(data => {
+        if (data.prompt) {
+            navigator.clipboard.writeText(data.prompt)
+                .then(() => showToast("交接提示词已复制"))
+                .catch(() => showToast("复制失败"));
+        }
+    })
+    .catch(() => showToast("获取提示词失败"));
 }
 
 setMode('quick');
@@ -869,6 +959,43 @@ def find_coding_tools_mcp():
     return None
 
 
+def init_session_relay(workspace):
+    if not os.path.isdir(workspace):
+        return {"success": False, "error": f"工作区目录不存在: {workspace}"}
+    agents_path = os.path.join(workspace, "AGENTS.md")
+    progress_path = os.path.join(workspace, "PROGRESS.md")
+    agents_created = False
+    agents_appended = False
+    progress_created = False
+    try:
+        if os.path.exists(agents_path):
+            with open(agents_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            if RELAY_MARKER not in content:
+                with open(agents_path, "a", encoding="utf-8") as f:
+                    if content and not content.endswith("\n"):
+                        f.write("\n")
+                    f.write("\n" + AGENTS_RELAY_SECTION + "\n")
+                agents_appended = True
+        else:
+            with open(agents_path, "w", encoding="utf-8") as f:
+                f.write(AGENTS_RELAY_SECTION + "\n")
+            agents_created = True
+        if not os.path.exists(progress_path):
+            with open(progress_path, "w", encoding="utf-8") as f:
+                f.write(PROGRESS_TEMPLATE)
+            progress_created = True
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    return {
+        "success": True,
+        "agentsCreated": agents_created,
+        "agentsAppended": agents_appended,
+        "progressCreated": progress_created,
+        "prompt": BOOTSTRAP_PROMPT,
+    }
+
+
 def find_cloudflared():
     suffix = ".exe" if os.name == "nt" else ""
     cmd = shutil.which("cloudflared")
@@ -1070,10 +1197,12 @@ def start_managed_services(mode, workspace, port, metrics_port, auth_mode="oauth
     env = os.environ.copy()
     env.pop("CODING_TOOLS_MCP_OAUTH_PASSWORD", None)
     env.pop("CODING_TOOLS_MCP_SERVER_URL", None)
+    env.pop("CODING_TOOLS_MCP_OAUTH_TOKEN_TTL", None)
 
     if auth_mode == "oauth":
         password = secrets.token_urlsafe(24).rstrip("=").replace("+", "-").replace("/", "_")
         env["CODING_TOOLS_MCP_OAUTH_PASSWORD"] = password
+        env["CODING_TOOLS_MCP_OAUTH_TOKEN_TTL"] = "604800"
     elif auth_mode == "bearer":
         bearer_token = secrets.token_urlsafe(32).rstrip("=")
 
@@ -1323,6 +1452,10 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         url_path = urlparse(self.path).path
 
+        if url_path == "/api/context/prompt":
+            self.send_json({"prompt": BOOTSTRAP_PROMPT})
+            return
+
         if url_path == "/" or url_path == "/index.html":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1402,6 +1535,16 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"relay": {"ok": False, "detail": "empty url"}})
                 return
             self.send_json({"relay": probe_relay(relay_url, force=True)})
+
+        elif url_path == "/api/context/init":
+            workspace = body_params.get("workspace", "").strip()
+            if not workspace:
+                self.send_json({"success": False, "error": "工作区路径为空。"})
+                return
+            self.send_json(init_session_relay(workspace))
+
+        elif url_path == "/api/context/prompt":
+            self.send_json({"prompt": BOOTSTRAP_PROMPT})
 
         else:
             self.send_error(404, "Not Found")
