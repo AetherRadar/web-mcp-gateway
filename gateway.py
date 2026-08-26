@@ -34,6 +34,7 @@ import socketserver
 APP_NAME = "Web MCP Gateway"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_PATH = os.path.join(BASE_DIR, "web-mcp-gateway.state.json")
+CONFIG_PATH = os.path.join(BASE_DIR, "web-mcp-gateway.config.json")
 WEB_SERVER_PORT = 8766
 
 MCP_OUT_LOG = os.path.join(BASE_DIR, "coding-tools-mcp.stdout.log")
@@ -692,6 +693,29 @@ def save_state(**kwargs):
         write_ui_log(f"Error saving state file: {e}")
 
 
+def get_persistent_config():
+    if not os.path.exists(CONFIG_PATH):
+        return None
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_persistent_config(**kwargs):
+    cfg = {
+        "savedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    cfg.update(kwargs)
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=4, ensure_ascii=False)
+        write_ui_log(f"已持久化配置到 {os.path.basename(CONFIG_PATH)}")
+    except Exception as e:
+        write_ui_log(f"Error saving config: {e}")
+
+
 def test_process_alive(pid):
     if not pid:
         return False
@@ -1153,6 +1177,7 @@ def start_relay_mode(relay_url):
         mode="relay",
         relayUrl=full,
     )
+    save_persistent_config(mode="relay", relayUrl=full)
     return {
         "success": True,
         "mcpUrl": mcp_url,
@@ -1341,6 +1366,17 @@ def start_managed_services(mode, workspace, port, metrics_port, auth_mode="oauth
         tunnelName=tunnel_name,
         permanentDomain=permanent_domain,
     )
+    save_persistent_config(
+        mode=mode,
+        workspace=workspace,
+        port=port,
+        metricsPort=metrics_port,
+        authMode=auth_mode,
+        permissionMode=permission_mode,
+        tunnelName=tunnel_name,
+        permanentDomain=permanent_domain,
+        relayUrl="",
+    )
 
     write_ui_log(f"Start sequence complete. MCP PID: {mcp_proc.pid}, Tunnel PID: {tunnel_proc.pid}")
     if auth_mode == "noauth":
@@ -1476,11 +1512,20 @@ def build_status_payload():
 
     pwd = get_password_from_log()
     url = get_tunnel_url_from_metrics(metrics_port) or get_tunnel_url_from_log()
+    cfg = get_persistent_config()
     response_data.update({
         "credential": pwd,
         "tunnelUrl": url,
         "mcpUrl": f"{url}/mcp" if url else "",
-        "workspace": state.get("workspace", "") if state else "",
+        "workspace": state.get("workspace", "") if state else (cfg.get("workspace", "") if cfg else ""),
+        "port": state.get("port", default_port) if state else (cfg.get("port", default_port) if cfg else default_port),
+        "metricsPort": state.get("metricsPort", metrics_port) if state else (cfg.get("metricsPort", metrics_port) if cfg else metrics_port),
+        "authMode": state.get("authMode", "oauth") if state else (cfg.get("authMode", "oauth") if cfg else "oauth"),
+        "permissionMode": state.get("permissionMode", "trusted") if state else (cfg.get("permissionMode", "trusted") if cfg else "trusted"),
+        "mode": state.get("mode", "quick") if state else (cfg.get("mode", "quick") if cfg else "quick"),
+        "tunnelName": state.get("tunnelName", "") if state else (cfg.get("tunnelName", "") if cfg else ""),
+        "permanentDomain": state.get("permanentDomain", "") if state else (cfg.get("permanentDomain", "") if cfg else ""),
+        "relayUrl": state.get("relayUrl", "") if state else (cfg.get("relayUrl", "") if cfg else ""),
     })
     return response_data
 

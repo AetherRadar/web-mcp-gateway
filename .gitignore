@@ -1,5 +1,6 @@
-# runtime state and logs
+# runtime state and logs (state is ephemeral, config is persistent)
 *.state.json
+!*.config.json
 *.stdout.log
 *.stderr.log
 
