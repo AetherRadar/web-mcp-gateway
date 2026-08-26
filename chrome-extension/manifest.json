@@ -5,6 +5,7 @@
   "description": "Highlight trusted MCP approval dialogs on ChatGPT / Claude / Grok and auto-approve or confirm with a hotkey. Aligned with coding-tools-mcp 0.3.0 tool catalog.",
   "permissions": ["storage"],
   "host_permissions": ["http://127.0.0.1:8766/*"],
+  "background": { "service_worker": "background.js" },
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",

@@ -1344,6 +1344,24 @@ def start_managed_services(mode, workspace, port, metrics_port, auth_mode="oauth
     write_ui_log(f"Start sequence complete. MCP PID: {mcp_proc.pid}, Tunnel PID: {tunnel_proc.pid}")
     if auth_mode == "noauth":
         write_ui_log("WARNING: 无认证模式已对外暴露隧道，仅建议本机调试使用！")
+
+    tunnel_pid = tunnel_proc.pid
+    if mode == "quick" and tunnel_url:
+        def _keepalive(url, pid):
+            while True:
+                time.sleep(240)
+                try:
+                    if not test_process_alive(pid):
+                        break
+                    state_now = get_state()
+                    if not state_now or state_now.get("tunnelUrl") != url:
+                        break
+                    urllib.request.urlopen(urllib.request.Request(url + "/mcp", headers={"Accept": "text/event-stream"}), timeout=10).read(1)
+                except Exception:
+                    pass
+        threading.Thread(target=_keepalive, args=(tunnel_url, tunnel_pid), daemon=True).start()
+        write_ui_log("Keepalive started (every 240s) to prevent QUIC idle timeout")
+
     return {"success": True, "tunnelUrl": tunnel_url, "credential": credential}
 
 
@@ -1368,7 +1386,8 @@ def build_status_payload():
     default_port = 8765
     metrics_port = 20242
 
-    mcp_scan, tunnel_scan = get_managed_processes_by_port(default_port)
+    eff_port = state.get("port", default_port) if state else default_port
+    mcp_scan, tunnel_scan = get_managed_processes_by_port(eff_port)
 
     response_data = {
         "status": "stopped",
@@ -1460,6 +1479,7 @@ def build_status_payload():
         "credential": pwd,
         "tunnelUrl": url,
         "mcpUrl": f"{url}/mcp" if url else "",
+        "workspace": state.get("workspace", "") if state else "",
     })
     return response_data
 

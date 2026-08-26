@@ -1,10 +1,14 @@
 // Auto-fill Grok Custom Connector dialog from local gateway
-// Fetches http://127.0.0.1:8766/api/status and fills Name + Server URL
-const GATEWAY = "http://127.0.0.1:8766";
-
+// Uses background service_worker to avoid https->http mixed-content block
 async function fetchMcpUrl() {
   try {
-    const r = await fetch(`${GATEWAY}/api/status`, { cache: "no-store" });
+    if (chrome.runtime && chrome.runtime.sendMessage) {
+      const res = await new Promise(resolve => {
+        chrome.runtime.sendMessage({ type: "GET_MCP_URL" }, r => resolve(r));
+      });
+      if (res && res.url) return res.url;
+    }
+    const r = await fetch("http://127.0.0.1:8766/api/status", { cache: "no-store" });
     if (!r.ok) return null;
     const j = await r.json();
     return j.mcpUrl || j.tunnelUrl ? (j.mcpUrl || j.tunnelUrl + "/mcp") : null;
