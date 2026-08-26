@@ -1,6 +1,7 @@
-# runtime state and logs (state is ephemeral, config is persistent)
+# runtime state and logs (state is ephemeral, config is local)
 *.state.json
-!*.config.json
+*.config.json
+!*.config.example.json
 *.stdout.log
 *.stderr.log
 

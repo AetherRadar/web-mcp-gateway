@@ -1,0 +1,12 @@
+{
+    "savedAt": "2026-08-27T00:00:00+0800",
+    "mode": "quick",
+    "workspace": "C:/path/to/your/project",
+    "port": 8765,
+    "metricsPort": 20242,
+    "authMode": "oauth",
+    "permissionMode": "trusted",
+    "tunnelName": "",
+    "permanentDomain": "",
+    "relayUrl": ""
+}
