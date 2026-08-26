@@ -238,7 +238,7 @@ input[readonly] { color: var(--text-muted); cursor: default; }
     <div class="main-layout">
         <div class="control-panel">
             <div class="panel-card">
-                <div class="form-group" data-mode-group="local">
+                <div class="form-group" data-mode-group="quick,named">
                     <label>工作区 (Workspace)</label>
                     <div class="input-row">
                         <input type="text" id="workspaceInput" placeholder="选择或粘贴本地项目绝对路径">
@@ -246,7 +246,7 @@ input[readonly] { color: var(--text-muted); cursor: default; }
                     </div>
                 </div>
 
-                <div class="grid-2" data-mode-group="local">
+                <div class="grid-2" data-mode-group="quick,named">
                     <div class="form-group">
                         <label>MCP 端口</label>
                         <input type="number" id="portInput" value="8765">
@@ -276,7 +276,7 @@ input[readonly] { color: var(--text-muted); cursor: default; }
                     </div>
                 </div>
 
-                <div class="grid-2" data-mode-group="local">
+                <div class="grid-2" data-mode-group="quick,named">
                     <div class="form-group">
                         <label>认证模式</label>
                         <select id="authModeSelect">
