@@ -1566,7 +1566,11 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         elif url_path == "/api/tunnel/auto-token":
             cert = os.path.join(os.path.expanduser("~"), ".cloudflared", "cert.pem")
             if not os.path.exists(cert):
-                self.send_json({"error": "未登录 Cloudflare，请先运行 cloudflared tunnel login 或 setup-fixed-tunnel.ps1"})
+                try:
+                    subprocess.Popen(["cloudflared", "tunnel", "login"], creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0)
+                except Exception:
+                    pass
+                self.send_json({"error": "浏览器已自动打开，请在 Cloudflare 页面完成登录授权，登录成功后再次点击「自动获取」"})
                 return
             try:
                 subprocess.run(["cloudflared", "tunnel", "create", "web-mcp-gateway"], capture_output=True, timeout=30)
