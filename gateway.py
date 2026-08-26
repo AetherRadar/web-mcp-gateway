@@ -1537,8 +1537,8 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 metrics_port=metrics_port,
                 auth_mode=body_params.get("authMode", "oauth"),
                 permission_mode=body_params.get("permissionMode", "trusted"),
-                tunnel_name=body_params.get("tunnel_name", "").strip(),
-                permanent_domain=body_params.get("permanent_domain", "").strip(),
+                tunnel_name=(body_params.get("tunnelName") or body_params.get("tunnel_name") or "").strip(),
+                permanent_domain=(body_params.get("permanentDomain") or body_params.get("permanent_domain") or "").strip(),
             )
             self.send_json(result)
 
