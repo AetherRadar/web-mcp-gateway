@@ -578,7 +578,8 @@ function autoToken() {
             document.getElementById('tunnelNameInput').value = data.token;
             showToast("Token 已自动填入");
         } else {
-            alert(data.error || "获取失败，请运行 setup-fixed-tunnel.ps1 或到 one.dash.cloudflare.com 手动复制");
+            if (data.openUrl) window.open(data.openUrl, "_blank");
+            alert((data.error || "获取失败") + "\\n\\n已为你打开 Cloudflare 控制台 → Networks → Tunnels 手动复制 Token");
         }
     })
     .catch(() => alert("获取失败：Gateway 未运行或 cloudflared 未登录"))
@@ -1595,14 +1596,19 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"error": "浏览器未自动弹出？请手动打开 PowerShell 执行： cloudflared tunnel login  —  完成后再次点击「自动获取」"})
                 return
             try:
-                subprocess.run(["cloudflared", "tunnel", "create", "web-mcp-gateway"], capture_output=True, timeout=30)
-                proc = subprocess.run(["cloudflared", "tunnel", "token", "web-mcp-gateway"], capture_output=True, timeout=15, text=True)
+                exe = find_cloudflared() or "cloudflared"
+                subprocess.run([exe, "tunnel", "create", "web-mcp-gateway"], capture_output=True, timeout=30)
+                proc = subprocess.run([exe, "tunnel", "token", "web-mcp-gateway"], capture_output=True, timeout=15, text=True)
                 token = (proc.stdout or proc.stderr or "").strip().split()[-1] if proc.stdout or proc.stderr else ""
                 if len(token) < 60:
-                    raise RuntimeError("token empty")
+                    raise RuntimeError("token empty - 请先在 Cloudflare 创建隧道")
                 self.send_json({"token": token})
             except Exception as e:
-                self.send_json({"error": f"获取 Token 失败: {e}，请到 one.dash.cloudflare.com -> Networks -> Tunnels 手动复制"})
+                try:
+                    webbrowser.open("https://one.dash.cloudflare.com")
+                except Exception:
+                    pass
+                self.send_json({"error": f"获取 Token 失败: {e}", "openUrl": "https://one.dash.cloudflare.com"})
 
         elif url_path == "/api/context/prompt":
             self.send_json({"prompt": BOOTSTRAP_PROMPT})
