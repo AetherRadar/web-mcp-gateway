@@ -1567,10 +1567,12 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
             cert = os.path.join(os.path.expanduser("~"), ".cloudflared", "cert.pem")
             if not os.path.exists(cert):
                 try:
-                    subprocess.Popen(["cloudflared", "tunnel", "login"], creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0)
+                    subprocess.Popen(
+                        ["powershell", "-NoProfile", "-Command", "Start-Process cloudflared -ArgumentList 'tunnel','login' -WindowStyle Normal"],
+                    )
                 except Exception:
                     pass
-                self.send_json({"error": "浏览器已自动打开，请在 Cloudflare 页面完成登录授权，登录成功后再次点击「自动获取」"})
+                self.send_json({"error": "浏览器未自动弹出？请手动打开 PowerShell 执行： cloudflared tunnel login  —  完成后再次点击「自动获取」"})
                 return
             try:
                 subprocess.run(["cloudflared", "tunnel", "create", "web-mcp-gateway"], capture_output=True, timeout=30)
