@@ -49,6 +49,30 @@ log_lock = threading.Lock()
 _relay_cache = {"at": 0.0, "result": None}
 _relay_lock = threading.Lock()
 
+MCP_PROXY_PORT = 8767
+EXTRA_TOOLS = [
+    {
+        "name": "workspace_context",
+        "description": "分析当前 workspace 的项目类型、已装工具链、缺失的 MCP 能力及安装命令。Grok 进入后先调一次，再决定是否需要 install_mcp。",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "install_mcp",
+        "description": "按名称后台安装一个新的 MCP 能力（如 godot、kenney、view_image 增强），安装过程异步，完成后热更新到 tools/list，无需重启 Gateway。Grok/ChatGPT 的连接器仍需用户在 UI 点一次确认。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "要安装的 MCP 名称，如 godot / kenney / ffmpeg"},
+                "source": {"type": "string", "enum": ["auto", "pip", "npm", "uvx"], "default": "auto"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+]
+DYNAMIC_TOOLS = []
+DYNAMIC_TOOLS_LOCK = threading.Lock()
+
 RELAY_MARKER = "<!-- web-mcp-gateway:relay -->"
 AGENTS_RELAY_SECTION = f"""{RELAY_MARKER}
 # Web MCP 会话接力协议（由 Web MCP Gateway 注入）
@@ -1041,6 +1065,93 @@ def init_session_relay(workspace):
     }
 
 
+def handle_workspace_context():
+    state = get_state()
+    workspace = state.get("workspace", "") if state else (get_persistent_config() or {}).get("workspace", "")
+    if not workspace or not os.path.isdir(workspace):
+        return {"project_type": "unknown", "workspace": workspace, "hint": "请先在 Gateway 选择工作区并启动"}
+    files = set()
+    try:
+        for name in os.listdir(workspace):
+            files.add(name)
+            if len(files) > 200:
+                break
+    except Exception:
+        pass
+    project_type = "generic"
+    if "project.godot" in files:
+        project_type = "Godot 4.x C#"
+    elif "OperationSteelTide.csproj" in files or any(f.endswith(".csproj") for f in files):
+        project_type = "Godot/.NET C#"
+    elif "package.json" in files:
+        project_type = "Node.js"
+    elif "Cargo.toml" in files:
+        project_type = "Rust"
+    elif "pyproject.toml" in files or "requirements.txt" in files:
+        project_type = "Python"
+    installed = {}
+    for cmd, label in [("dotnet --version", "dotnet"), ("python --version", "python"), ("node --version", "node"), ("cargo --version", "cargo")]:
+        try:
+            out = subprocess.check_output(cmd.split(), stderr=subprocess.STDOUT, timeout=3).decode(errors="ignore").strip().splitlines()[0][:80]
+            installed[label] = out
+        except Exception:
+            installed[label] = "not found"
+    godot_path = shutil.which("godot") or "not found"
+    suggestions = []
+    if project_type.startswith("Godot") and "not found" in installed.get("dotnet", ""):
+        suggestions.append({"missing": "dotnet SDK", "install": "winget install Microsoft.DotNet.SDK.8"})
+    if project_type.startswith("Godot") and godot_path == "not found":
+        suggestions.append({"missing": "Godot 4.6", "install": "下载 Godot_v4.6.3-stable_mono_win64 并加入 PATH，或在 Gateway 配置 Godot 路径"})
+    if project_type.startswith("Godot"):
+        suggestions.append({"missing": "Godot MCP (可选)", "install": "pip install godot-mcp  或  npx @kenney/asset-mcp  —  告诉用户去 Grok Custom Connector 添加对应 MCP URL"})
+    return {
+        "project_type": project_type,
+        "workspace": workspace,
+        "files_sample": sorted(list(files))[:20],
+        "installed": installed,
+        "godot": godot_path,
+        "suggestions": suggestions,
+        "next_step": "如需扩展能力，调用 install_mcp {name: 'godot'}，网关后台安装并热更新到 tools/list，无需重启。",
+    }
+
+
+def handle_install_mcp(name, source="auto"):
+    name = (name or "").strip().lower()
+    if not name:
+        return {"ok": False, "error": "name required"}
+
+    def _bg():
+        try:
+            write_ui_log(f"[install_mcp] 开始安装: {name} (source={source})")
+            cmds = []
+            if source in ("auto", "pip"):
+                cmds.append([sys.executable, "-m", "pip", "install", "--user", name])
+            if source in ("auto", "npm"):
+                if shutil.which("npm"):
+                    cmds.append(["npm", "install", "-g", name])
+            if source in ("uvx", "auto") and shutil.which("uvx"):
+                cmds.append(["uvx", name, "--help"])
+            ok = False
+            last = ""
+            for cmd in cmds:
+                try:
+                    proc = subprocess.run(cmd, capture_output=True, timeout=300, text=True)
+                    last = (proc.stdout or proc.stderr or "")[-800:]
+                    if proc.returncode == 0:
+                        ok = True
+                        break
+                except Exception as e:
+                    last = str(e)
+            with DYNAMIC_TOOLS_LOCK:
+                DYNAMIC_TOOLS.append({"name": f"ext_{name}", "description": f"已安装扩展 {name}（{source}），请用 exec_command 直接调用其 CLI）", "installed_via": source, "log_tail": last[-400:]})
+            write_ui_log(f"[install_mcp] 完成: {name} ok={ok}")
+        except Exception as e:
+            write_ui_log(f"[install_mcp] 失败: {e}")
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return {"ok": True, "message": f"已在后台开始安装 {name}，完成后将热更新到 tools/list，期间可用 exec_command 直接调用。Grok/ChatGPT 的连接器仍需用户在 UI 确认一次。", "hot_reload": True}
+
+
 def find_cloudflared():
     suffix = ".exe" if os.name == "nt" else ""
     cmd = shutil.which("cloudflared")
@@ -1309,11 +1420,11 @@ def start_managed_services(mode, workspace, port, metrics_port, auth_mode="oauth
         if len(tunnel_name) > 60:
             tunnel_args = [cloudflared_exe, "tunnel", "run", "--token", tunnel_name]
         else:
-            tunnel_args = [cloudflared_exe, "tunnel", "run", "--url", f"http://127.0.0.1:{port}", tunnel_name]
+            tunnel_args = [cloudflared_exe, "tunnel", "run", "--url", f"http://127.0.0.1:{MCP_PROXY_PORT}", tunnel_name]
     else:
         tunnel_args = [
             cloudflared_exe, "tunnel",
-            "--url", f"http://127.0.0.1:{port}",
+            "--url", f"http://127.0.0.1:{MCP_PROXY_PORT}",
             "--metrics", f"127.0.0.1:{metrics_port}",
         ]
 
@@ -1671,6 +1782,159 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
+def _forward_to_upstream(path, method, headers, body):
+    state = get_state()
+    upstream_port = state.get("port", 8765) if state else 8765
+    url = f"http://127.0.0.1:{upstream_port}{path}"
+    req_headers = {}
+    for k in ("Content-Type", "Accept", "Authorization", "MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):
+        v = headers.get(k) or headers.get(k.lower())
+        if v:
+            req_headers[k] = v
+    req = urllib.request.Request(url, data=body, headers=req_headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+    except Exception as e:
+        return 502, {}, json.dumps({"error": str(e)}).encode()
+
+
+class McpProxyHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        pass
+
+    def do_GET(self):
+        status, headers, body = _forward_to_upstream(self.path, "GET", dict(self.headers), None)
+        self.send_response(status)
+        for k, v in headers.items():
+            if k.lower() not in ("content-length", "transfer-encoding", "connection"):
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        try:
+            data = json.loads(body) if body else {}
+        except Exception:
+            data = {}
+        method = data.get("method", "")
+
+        if method == "tools/list":
+            status, headers, up_body = _forward_to_upstream(self.path, "POST", dict(self.headers), body)
+            if status != 200:
+                self.send_response(status)
+                for k, v in headers.items():
+                    if k.lower() not in ("content-length", "transfer-encoding", "connection"):
+                        self.send_header(k, v)
+                self.send_header("Content-Length", str(len(up_body)))
+                self.end_headers()
+                self.wfile.write(up_body)
+                return
+            try:
+                up_json = json.loads(up_body)
+                tools = up_json.get("result", {}).get("tools", [])
+                if not tools and "result" in up_json and isinstance(up_json["result"], dict):
+                    tools = up_json["result"].get("tools", [])
+                with DYNAMIC_TOOLS_LOCK:
+                    extra = EXTRA_TOOLS + DYNAMIC_TOOLS
+                for t in extra:
+                    if "inputSchema" not in t:
+                        t["inputSchema"] = {"type": "object", "properties": {}, "additionalProperties": False}
+                up_json.setdefault("result", {})["tools"] = tools + extra
+                body = json.dumps(up_json, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            except Exception:
+                pass
+            self.send_response(status)
+            for k, v in headers.items():
+                if k.lower() not in ("content-length", "transfer-encoding", "connection"):
+                    self.send_header(k, v)
+            self.send_header("Content-Length", str(len(up_body)))
+            self.end_headers()
+            self.wfile.write(up_body)
+            return
+
+        if method == "tools/call":
+            params = data.get("params", {})
+            name = params.get("name", "")
+            args = params.get("arguments", {})
+            if name == "workspace_context":
+                result = handle_workspace_context()
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": data.get("id"),
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
+                        "structuredContent": result,
+                        "isError": False,
+                    },
+                }
+                body = json.dumps(payload, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if name == "install_mcp":
+                result = handle_install_mcp(args.get("name", ""), args.get("source", "auto"))
+                is_error = not result.get("ok", False)
+                payload = {
+                    "jsonrpc": "2.0",
+                    "id": data.get("id"),
+                    "result": {
+                        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
+                        "structuredContent": result,
+                        "isError": is_error,
+                    },
+                }
+                body = json.dumps(payload, ensure_ascii=False).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            # Check dynamic tools
+            with DYNAMIC_TOOLS_LOCK:
+                for t in DYNAMIC_TOOLS:
+                    if t.get("name") == name:
+                        payload = {
+                            "jsonrpc": "2.0",
+                            "id": data.get("id"),
+                            "result": {
+                                "content": [{"type": "text", "text": f"扩展工具 {name} 已安装，请用 exec_command 调用其 CLI。详情: {json.dumps(t, ensure_ascii=False)}"}],
+                                "isError": False,
+                            },
+                        }
+                        body = json.dumps(payload, ensure_ascii=False).encode()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                        return
+
+        status, headers, up_body = _forward_to_upstream(self.path, "POST", dict(self.headers), body)
+        self.send_response(status)
+        for k, v in headers.items():
+            if k.lower() not in ("content-length", "transfer-encoding", "connection"):
+                self.send_header(k, v)
+        self.send_header("Content-Length", str(len(up_body)))
+        self.end_headers()
+        self.wfile.write(up_body)
+
+
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
@@ -1694,6 +1958,13 @@ def main():
         print("请检查是否已有 Gateway 实例在运行。")
         sys.exit(1)
 
+    try:
+        proxy_httpd = ThreadedHTTPServer(("127.0.0.1", MCP_PROXY_PORT), McpProxyHandler)
+        threading.Thread(target=proxy_httpd.serve_forever, daemon=True).start()
+        print(f" MCP Proxy listening on http://127.0.0.1:{MCP_PROXY_PORT}/mcp (hot-reload enabled)")
+    except Exception as e:
+        print(f"WARN: MCP proxy not started: {e}")
+
     print("==================================================================")
     print(f" {APP_NAME} Background Server Active")
     print(f" URL: http://127.0.0.1:{WEB_SERVER_PORT}")
@@ -1708,6 +1979,10 @@ def main():
         pass
     finally:
         httpd.server_close()
+        try:
+            proxy_httpd.server_close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
