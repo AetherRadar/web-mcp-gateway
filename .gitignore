@@ -1,0 +1,14 @@
+# runtime state and logs
+*.state.json
+*.stdout.log
+*.stderr.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os
+.DS_Store
+Thumbs.db

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatGPT MCP Approval Helper 本地测试沙盒</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f111a;
+      --card-bg: rgba(26, 29, 46, 0.7);
+      --text: #f3f4f6;
+      --border: rgba(255, 255, 255, 0.08);
+      --font: 'Outfit', sans-serif;
+    }
+
+    body {
+      margin: 0;
+      padding: 40px 20px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      box-sizing: border-box;
+    }
+
+    .sandbox-container {
+      width: 100%;
+      max-width: 800px;
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 30px;
+      box-shadow: 0 15px 35px rgba(0,0,0,0.5);
+      margin-bottom: 30px;
+    }
+
+    h1 {
+      font-size: 24px;
+      margin-bottom: 10px;
+      text-align: center;
+      background: linear-gradient(135deg, #3b82f6, #10b981);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .desc {
+      color: #9ca3af;
+      font-size: 14px;
+      text-align: center;
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+
+    .btn-panel {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      margin-bottom: 30px;
+      flex-wrap: wrap;
+    }
+
+    .btn {
+      padding: 12px 20px;
+      border-radius: 10px;
+      border: none;
+      font-family: var(--font);
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    }
+
+    .btn-primary {
+      background: #10b981;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #059669;
+      transform: translateY(-2px);
+    }
+
+    .btn-warning {
+      background: #f59e0b;
+      color: white;
+    }
+
+    .btn-warning:hover {
+      background: #d97706;
+      transform: translateY(-2px);
+    }
+
+    .btn-danger {
+      background: #ef4444;
+      color: white;
+    }
+
+    .btn-danger:hover {
+      background: #dc2626;
+      transform: translateY(-2px);
+    }
+
+    /* 模拟 ChatGPT UI 的弹窗样式 */
+    .mock-chatgpt-dialog {
+      background: #1e1e24;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      width: 480px;
+      padding: 24px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      margin: 30px auto 0 auto;
+      position: relative;
+      animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    @keyframes popIn {
+      from { transform: scale(0.9); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
+    .dialog-header {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #fff;
+    }
+
+    .dialog-body {
+      font-size: 14px;
+      color: #d1d5db;
+      line-height: 1.6;
+      margin-bottom: 20px;
+    }
+
+    .dialog-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+    }
+
+    .dialog-btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      font-family: var(--font);
+    }
+
+    .dialog-btn-cancel {
+      background: transparent;
+      color: #9ca3af;
+    }
+
+    .dialog-btn-cancel:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .dialog-btn-allow {
+      background: #10b981;
+      color: #fff;
+      border: none;
+    }
+
+    .dialog-btn-allow:hover {
+      background: #059669;
+    }
+
+    .log-container {
+      width: 100%;
+      max-width: 800px;
+      background: #090a0f;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-top: 20px;
+    }
+
+    .log-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .log-list {
+      font-family: monospace;
+      font-size: 12px;
+      color: #10b981;
+      max-height: 150px;
+      overflow-y: auto;
+      list-style: none;
+      padding-left: 0;
+    }
+
+    .log-item {
+      margin-bottom: 6px;
+      border-bottom: 1px solid rgba(255,255,255,0.02);
+      padding-bottom: 4px;
+    }
+
+    /* 内嵌 Options 预览区 */
+    .options-preview {
+      width: 100%;
+      height: 480px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-top: 20px;
+      overflow: hidden;
+    }
+
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="sandbox-container">
+    <h1>MCP Approval Helper 测试沙盒</h1>
+    <p class="desc">
+      本页面用以在本地模拟 ChatGPT 页面以测试 Content Script 检测功能。<br>
+      您可以在此开启模拟弹窗，并测试<strong>自动核准</strong>、<strong>快捷键 (Ctrl + Shift + Y)</strong> 以及 <strong>Audit Log 记录</strong>。
+    </p>
+
+    <div class="btn-panel">
+      <button id="btn-trusted" class="btn btn-primary">模拟信任工具弹窗 (git_status)</button>
+      <button id="btn-untrusted" class="btn btn-warning">模拟未信任工具弹窗 (delete_database)</button>
+      <button id="btn-clear" class="btn btn-danger">关闭模拟弹窗</button>
+    </div>
+
+    <!-- 模拟弹窗插槽 -->
+    <div id="dialog-slot"></div>
+  </div>
+
+  <div class="sandbox-container">
+    <div class="log-title">
+      <span>设置选项页面预览 (本机 LocalStorage 模拟)</span>
+    </div>
+    <div class="options-preview">
+      <iframe src="options.html" id="options-iframe"></iframe>
+    </div>
+  </div>
+
+  <div class="log-container">
+    <div class="log-title">
+      <span>审计日志 Audit Log (localStorage: mcpApprovalHelperLog)</span>
+      <a href="#" id="clear-logs" style="color: #ef4444; text-decoration: none;">清除日志</a>
+    </div>
+    <ul id="log-list" class="log-list">
+      <li class="log-item" style="color: #6b7280; font-style: italic;">暂无日志记录。触发核准后将自动更新。</li>
+    </ul>
+  </div>
+
+  <script>
+    const dialogSlot = document.getElementById("dialog-slot");
+    const logList = document.getElementById("log-list");
+    const clearLogs = document.getElementById("clear-logs");
+    const optionsIframe = document.getElementById("options-iframe");
+
+    // 模拟弹窗产生器
+    function showMockDialog(toolName, isTrusted) {
+      // 先关闭旧的
+      clearDialog();
+
+      const dialog = document.createElement("div");
+      dialog.className = "mock-chatgpt-dialog";
+      dialog.setAttribute("role", "dialog");
+      
+      dialog.innerHTML = `
+        <div class="dialog-header">
+          <span>🛡️ MCP Tool Call Authorization</span>
+        </div>
+        <div class="dialog-body">
+          The model wants to execute the MCP tool <strong>${toolName}</strong>.<br>
+          <span style="font-size: 12px; color: #9ca3af;">
+            This tool requires explicit user permission. Click "Allow" to grant permission for this execution session.
+          </span>
+        </div>
+        <div class="dialog-footer">
+          <button class="dialog-btn dialog-btn-cancel" onclick="clearDialog()">Deny</button>
+          <button class="dialog-btn dialog-btn-allow" id="btn-allow-trigger">Allow</button>
+        </div>
+      `;
+
+      dialogSlot.appendChild(dialog);
+
+      // 当点击 Allow 按钮时
+      dialog.querySelector("#btn-allow-trigger").addEventListener("click", () => {
+        alert(`已成功点击 Allow 授权弹窗！执行工具: ${toolName}`);
+        clearDialog();
+        updateLogs();
+      });
+    }
+
+    function clearDialog() {
+      dialogSlot.innerHTML = "";
+      // 触发 content.js 里的 scan
+      window.dispatchEvent(new Event('resize')); 
+    }
+
+    document.getElementById("btn-trusted").addEventListener("click", () => {
+      showMockDialog("git_status", true);
+    });
+
+    document.getElementById("btn-untrusted").addEventListener("click", () => {
+      showMockDialog("delete_database", false);
+    });
+
+    document.getElementById("btn-clear").addEventListener("click", () => {
+      clearDialog();
+    });
+
+    // 审计日志更新
+    function updateLogs() {
+      const key = "mcpApprovalHelperLog";
+      const logs = JSON.parse(localStorage.getItem(key) || "[]");
+      logList.innerHTML = "";
+
+      if (logs.length === 0) {
+        logList.innerHTML = `<li class="log-item" style="color: #6b7280; font-style: italic;">暂无日志记录。触发核准后将自动更新。</li>`;
+        return;
+      }
+
+      logs.reverse().forEach(log => {
+        const item = document.createElement("li");
+        item.className = "log-item";
+        const statusText = log.trusted ? "TRUSTED (Auto/Hotkey)" : "UNTRUSTED (Manual approved)";
+        const color = log.trusted ? "#10b981" : "#f59e0b";
+        item.innerHTML = `[${new Date(log.time).toLocaleTimeString()}] 授权工具: <strong style="color:${color}">${log.toolName}</strong> | 状态: ${statusText}`;
+        logList.appendChild(item);
+      });
+    }
+
+    clearLogs.addEventListener("click", (e) => {
+      e.preventDefault();
+      localStorage.removeItem("mcpApprovalHelperLog");
+      updateLogs();
+    });
+
+    // 监听 iframe 变更，同步更新测试页面的状态
+    window.addEventListener("storage", (e) => {
+      // localStorage 发生变动时，更新审计日志与重新触发扫描
+      updateLogs();
+    });
+
+    // 每秒检查一次日志变动与 storage（本地测试用）
+    setInterval(updateLogs, 1500);
+
+    // 初始加载日志
+    updateLogs();
+  </script>
+
+  <!-- 引入 Content.js 进行本地测试 -->
+  <script src="content.js"></script>
+</body>
+</html>

@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatGPT MCP Approval Helper 设置</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-gradient: radial-gradient(circle at 50% 50%, #161925 0%, #0b0c10 100%);
+      --card-bg: rgba(30, 34, 51, 0.6);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --accent-color: #10b981; /* Emerald */
+      --accent-hover: #059669;
+      --danger-color: #ef4444;
+      --danger-hover: #dc2626;
+      --glow-emerald: rgba(16, 185, 129, 0.15);
+      --glow-blue: rgba(59, 130, 246, 0.15);
+      --font-outfit: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-outfit);
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 40px 20px;
+      overflow-x: hidden;
+    }
+
+    /* 背景流光装饰 */
+    .bg-glow-1 {
+      position: absolute;
+      width: 400px;
+      height: 400px;
+      background: radial-gradient(circle, rgba(16, 185, 129, 0.08) 0%, rgba(0,0,0,0) 70%);
+      top: -100px;
+      left: -100px;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    .bg-glow-2 {
+      position: absolute;
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, rgba(59, 130, 246, 0.06) 0%, rgba(0,0,0,0) 70%);
+      bottom: -150px;
+      right: -150px;
+      z-index: -1;
+      pointer-events: none;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 680px;
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      padding: 40px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4), 
+                  inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      position: relative;
+      animation: fadeIn 0.6s ease-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 35px;
+    }
+
+    .logo-area {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 64px;
+      height: 64px;
+      background: linear-gradient(135deg, #10b981 0%, #3b82f6 100%);
+      border-radius: 18px;
+      margin-bottom: 16px;
+      box-shadow: 0 8px 24px rgba(16, 185, 129, 0.3);
+    }
+
+    .logo-icon {
+      font-size: 32px;
+      color: white;
+      user-select: none;
+    }
+
+    h1 {
+      font-size: 26px;
+      font-weight: 700;
+      background: linear-gradient(to right, #ffffff, #d1d5db);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 8px;
+    }
+
+    .description {
+      font-size: 14px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    .section {
+      background: rgba(15, 17, 26, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: 16px;
+      padding: 24px;
+      margin-bottom: 24px;
+      transition: border-color 0.3s ease;
+    }
+
+    .section:hover {
+      border-color: rgba(255, 255, 255, 0.08);
+    }
+
+    .section-title {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: #ffffff;
+    }
+
+    .section-title-icon {
+      color: var(--accent-color);
+      font-size: 18px;
+    }
+
+    /* Switch Style */
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .setting-info {
+      flex: 1;
+    }
+
+    .setting-label {
+      font-size: 15px;
+      font-weight: 500;
+      margin-bottom: 4px;
+      color: #ffffff;
+    }
+
+    .setting-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 50px;
+      height: 28px;
+      flex-shrink: 0;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #374151;
+      transition: .4s;
+      border-radius: 34px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 20px;
+      width: 20px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: .4s;
+      border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+
+    input:checked + .slider {
+      background-color: var(--accent-color);
+      box-shadow: 0 0 10px var(--glow-emerald);
+    }
+
+    input:focus + .slider {
+      box-shadow: 0 0 1px var(--accent-color);
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(22px);
+    }
+
+    /* Chip Management */
+    .input-group {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .text-input {
+      flex: 1;
+      background: rgba(15, 17, 26, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 12px 16px;
+      color: white;
+      font-family: var(--font-outfit);
+      font-size: 14px;
+      transition: all 0.3s ease;
+    }
+
+    .text-input:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.2);
+    }
+
+    .btn {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 0 20px;
+      font-family: var(--font-outfit);
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px var(--glow-emerald);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: #e5e7eb;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.12);
+      box-shadow: 0 4px 12px rgba(255, 255, 255, 0.05);
+    }
+
+    .chips-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-height: 50px;
+      padding: 12px;
+      background: rgba(15, 17, 26, 0.3);
+      border: 1px dashed rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      align-content: flex-start;
+    }
+
+    .chip {
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.2);
+      color: #93c5fd;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      animation: chipPop 0.2s ease-out;
+      user-select: none;
+    }
+
+    @keyframes chipPop {
+      from { transform: scale(0.8); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
+    .chip-delete {
+      cursor: pointer;
+      color: rgba(147, 197, 253, 0.6);
+      font-size: 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      transition: all 0.2s ease;
+    }
+
+    .chip-delete:hover {
+      background: rgba(239, 68, 68, 0.2);
+      color: var(--danger-color);
+    }
+
+    .actions-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 30px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      padding-top: 20px;
+    }
+
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: rgba(16, 185, 129, 0.9);
+      backdrop-filter: blur(8px);
+      color: white;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 600;
+      box-shadow: 0 10px 25px rgba(16, 185, 129, 0.3);
+      z-index: 1000;
+      transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      opacity: 0;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+
+    .toast-icon {
+      font-size: 16px;
+    }
+
+    /* 空状态提示 */
+    .empty-state {
+      color: var(--text-muted);
+      font-size: 13px;
+      width: 100%;
+      text-align: center;
+      padding: 10px 0;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-glow-1"></div>
+  <div class="bg-glow-2"></div>
+
+  <main class="container">
+    <header>
+      <img src="icons/icon-128.png" alt="Logo" style="width: 64px; height: 64px; border-radius: 18px; margin-bottom: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.08);">
+      <h1>ChatGPT MCP Approval Helper</h1>
+
+      <p class="description">自定义安全设置，让您的 MCP 工具呼叫既流畅又安全。</p>
+    </header>
+
+    <!-- 自动核准设置 -->
+    <section class="section">
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="section-title">
+            <span class="section-title-icon">⚡</span>
+            <label for="auto-approve-toggle" class="setting-label">自动核准信任工具 (Auto-Approve)</label>
+          </div>
+          <p class="setting-desc">当检测到 ChatGPT 上的 MCP 授权弹窗时，若该工具位于下方的“信任清单”，扩展程序会自动点击允许 (Allow)，无须手动按快捷键。</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="auto-approve-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <!-- 信任的 API 工具管理 -->
+    <section class="section">
+      <div class="section-title">
+        <span class="section-title-icon">🔑</span>
+        <span>信任的 API 工具清单 (API Tools Allowlist)</span>
+      </div>
+      <p class="setting-desc" style="margin-top:-10px; margin-bottom:16px;">当授权弹窗中的具体 API 工具名称与此清单匹配时，将视为信任工具：</p>
+      
+      <div class="input-group">
+        <input type="text" id="tool-input" class="text-input" placeholder="输入工具名称，例如：git_status" autocomplete="off">
+        <button id="add-tool-btn" class="btn" type="button">
+          <span>新增工具</span>
+        </button>
+      </div>
+
+      <div id="chips-list-tools" class="chips-container">
+        <!-- Tool Chips will be dynamic injected here -->
+      </div>
+    </section>
+
+    <!-- 信任的 MCP 服务器管理 -->
+    <section class="section">
+      <div class="section-title">
+        <span class="section-title-icon">🖥️</span>
+        <span>信任的 MCP 服务器清单 (MCP Servers Allowlist)</span>
+      </div>
+      <p class="setting-desc" style="margin-top:-10px; margin-bottom:16px;">当授权弹窗是针对以下整个 MCP 服务器名称时，将视为信任服务器：</p>
+      
+      <div class="input-group">
+        <input type="text" id="server-input" class="text-input" placeholder="输入服务器名称，例如：MCP Neverending Coding" autocomplete="off">
+        <button id="add-server-btn" class="btn" type="button">
+          <span>新增服务器</span>
+        </button>
+      </div>
+
+      <div id="chips-list-servers" class="chips-container">
+        <!-- Server Chips will be dynamic injected here -->
+      </div>
+    </section>
+
+
+    <!-- 底部操作列 -->
+    <div class="actions-footer">
+      <button id="reset-btn" class="btn btn-secondary" type="button">
+        重置为默认信任清单
+      </button>
+      <span class="setting-desc">变更将实时保存</span>
+    </div>
+  </main>
+
+  <!-- 储存提示 Toast -->
+  <div id="save-toast" class="toast">
+    <span class="toast-icon">✓</span>
+    <span>设置已成功保存</span>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>
