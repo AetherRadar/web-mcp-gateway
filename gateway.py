@@ -260,7 +260,10 @@ input[readonly] { color: var(--text-muted); cursor: default; }
                 <div class="grid-2" data-mode-group="named">
                     <div class="form-group">
                         <label>Tunnel 名称 / Token</label>
-                        <input type="text" id="tunnelNameInput" placeholder="tunnel 名称或 Zero Trust Token">
+                        <div class="input-row">
+                            <input type="text" id="tunnelNameInput" placeholder="tunnel 名称或 Zero Trust Token">
+                            <button class="btn" onclick="autoToken()" title="自动创建并获取 Token">自动获取</button>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>永久域名 (可选)</label>
@@ -563,6 +566,23 @@ function checkRelay() {
         showToast(r.ok ? "服务器在线" : "服务器不可达");
     })
     .catch(() => showToast("检测请求失败"));
+}
+
+function autoToken() {
+    const btn = document.querySelector('button[onclick="autoToken()"]');
+    if (btn) { btn.textContent = "获取中..."; btn.disabled = true; }
+    fetch('/api/tunnel/auto-token', { method: 'POST' })
+    .then(res => res.json())
+    .then(data => {
+        if (data.token) {
+            document.getElementById('tunnelNameInput').value = data.token;
+            showToast("Token 已自动填入");
+        } else {
+            alert(data.error || "获取失败，请运行 setup-fixed-tunnel.ps1 或到 one.dash.cloudflare.com 手动复制");
+        }
+    })
+    .catch(() => alert("获取失败：Gateway 未运行或 cloudflared 未登录"))
+    .finally(() => { if (btn) { btn.textContent = "自动获取"; btn.disabled = false; } });
 }
 
 function initRelay() {
@@ -1542,6 +1562,21 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
                 self.send_json({"success": False, "error": "工作区路径为空。"})
                 return
             self.send_json(init_session_relay(workspace))
+
+        elif url_path == "/api/tunnel/auto-token":
+            cert = os.path.join(os.path.expanduser("~"), ".cloudflared", "cert.pem")
+            if not os.path.exists(cert):
+                self.send_json({"error": "未登录 Cloudflare，请先运行 cloudflared tunnel login 或 setup-fixed-tunnel.ps1"})
+                return
+            try:
+                subprocess.run(["cloudflared", "tunnel", "create", "web-mcp-gateway"], capture_output=True, timeout=30)
+                proc = subprocess.run(["cloudflared", "tunnel", "token", "web-mcp-gateway"], capture_output=True, timeout=15, text=True)
+                token = (proc.stdout or proc.stderr or "").strip().split()[-1] if proc.stdout or proc.stderr else ""
+                if len(token) < 60:
+                    raise RuntimeError("token empty")
+                self.send_json({"token": token})
+            except Exception as e:
+                self.send_json({"error": f"获取 Token 失败: {e}，请到 one.dash.cloudflare.com -> Networks -> Tunnels 手动复制"})
 
         elif url_path == "/api/context/prompt":
             self.send_json({"prompt": BOOTSTRAP_PROMPT})
