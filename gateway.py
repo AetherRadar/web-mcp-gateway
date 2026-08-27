@@ -23,6 +23,8 @@ import shutil
 import re
 import threading
 import collections
+import base64
+import http.client
 import subprocess
 import urllib.request
 import urllib.error
@@ -30,6 +32,7 @@ from urllib.parse import urlparse
 import webbrowser
 import http.server
 import socketserver
+import tempfile
 
 APP_NAME = "Web MCP Gateway"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -69,9 +72,128 @@ EXTRA_TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "screenshot",
+        "description": "截取网关所在电脑的屏幕（全屏），以图像返回。用来自检：观察界面/建模渲染/报错弹窗是否符合预期。macOS 首次可能提示「屏幕录制」权限，授予后再试。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "可选，保存截图的文件路径（默认存到工作区 .mcp-snapshots/）"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "run_long",
+        "description": "在网关电脑上后台异步执行一条长命令（kill 构建/渲染/脚本/可交互命令），立即返回 taskId 不阻塞、不超时。配合 task_status 轮询、tail_log 看日志。command 会在工作区目录下用 shell 执行。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "要执行的命令，如 './build.sh' / 'pytest -x' / 'dotnet build'"},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "task_status",
+        "description": "查询 run_long 后台任务的状态（running/退出码）并返回日志尾部。用于长命令轮询，避免一次性超时 502。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "taskId": {"type": "string", "description": "run_long 返回的 taskId"},
+                "lines": {"type": "integer", "description": "返回值包含的日志尾部行数，默认 50"},
+            },
+            "required": ["taskId"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tail_log",
+        "description": "读取任意文件末尾若干行（日志、编译输出、stderr）。请求先 tail_log 观察报错，再决定下一步。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "要读取的文件绝对路径"},
+                "lines": {"type": "integer", "description": "读取末尾行数，默认 50"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "tail_follow",
+        "description": "实时跟随一个日志文件（类似 tail -f）。首次传 lines 取末尾几行；之后把上次返回的 end_offset 作为 start_offset 传入，即可只拿到新增内容。用于长任务/build/渲染期间的持续观察。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "要跟随的文件绝对路径"},
+                "lines": {"type": "integer", "description": "首次调用时取末尾行数（默认 30）。传 start_offset 时忽略"},
+                "start_offset": {"type": "integer", "description": "上次返回的 end_offset，表示从该字节位置继续读"},
+                "wait_seconds": {"type": "number", "description": "等待新数据的最长时间，默认 2 秒"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "kill_task",
+        "description": "终止一个仍在运行的 run_long 后台任务（连同其子进程）。任务跑飞/卡住时调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "taskId": {"type": "string", "description": "run_long 返回的 taskId"},
+            },
+            "required": ["taskId"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_tasks",
+        "description": "列出所有 run_long 后台任务及其状态（running/exit/logPath）。传 action='cleanup' 可清理所有已结束任务并删除对应日志。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["", "cleanup"], "description": "可选，'cleanup' 清理已结束任务"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "godot_run",
+        "description": "用本机 Godot 运行/校验项目并抓取输出。默认 --headless --quit-after，用于验证项目能否加载/场景脚本是否报错。可传 scene、args、export 参数。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "godotPath": {"type": "string", "description": "godot 可执行文件路径（未加入 PATH 时用）"},
+                "project": {"type": "string", "description": "项目目录，默认工作区根目录"},
+                "scene": {"type": "string", "description": "要运行的场景（如 res://scenes/main.tscn）"},
+                "headless": {"type": "boolean", "description": "是否无窗口运行，默认 true"},
+                "quitAfter": {"type": "integer", "description": "运行多少帧后退出，默认 600；传 0 则不退出"},
+                "timeout": {"type": "integer", "description": "超时秒数，默认 120"},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "额外命令行参数"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "status_overview",
+        "description": "一次调用返回工作区全貌：git 分支/改动、所有后台任务及其日志尾、网关最近日志。模型开始干活时先调一下，避免连环调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "lines": {"type": "integer", "description": "各单位返回的日志/行数，默认 20"},
+            },
+            "additionalProperties": False,
+        },
+    },
 ]
 DYNAMIC_TOOLS = []
 DYNAMIC_TOOLS_LOCK = threading.Lock()
+
+LONG_TASKS = {}
+LONG_TASKS_LOCK = threading.Lock()
+LONG_TASK_COUNTER = [0]
 
 RELAY_MARKER = "<!-- web-mcp-gateway:relay -->"
 AGENTS_RELAY_SECTION = f"""{RELAY_MARKER}
@@ -1782,38 +1904,458 @@ class GatewayRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def _forward_to_upstream(path, method, headers, body):
+def _workspace_path():
+    state = get_state() or {}
+    workspace = state.get("workspace", "") or (get_persistent_config() or {}).get("workspace", "")
+    return workspace if os.path.isdir(workspace) else ""
+
+
+def _capture_screen(path):
+    if os.name == "nt":
+        ps = (
+            "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+            "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
+            "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+            "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+            "$g.CopyFromScreen($b.X,$b.Y,0,0,$bmp.Size);"
+            f"$bmp.Save('{path}',[System.Drawing.Imaging.ImageFormat]::Png);"
+            "$g.Dispose();$bmp.Dispose()"
+        )
+        try:
+            proc = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps],
+                                  capture_output=True, timeout=30)
+            return proc.returncode == 0 and os.path.exists(path)
+        except Exception:
+            return False
+    capture = shutil.which("screencapture")
+    if not capture:
+        for c in ("scrot", "import", "gnome-screenshot"):
+            p = shutil.which(c)
+            if p:
+                capture = p
+                break
+    if not capture:
+        return False
+    try:
+        subprocess.run([capture, "-x", path], capture_output=True, timeout=30)
+        return os.path.exists(path)
+    except Exception:
+        return False
+
+
+def handle_screenshot(args):
+    out_dir = os.path.join(_workspace_path() or tempfile.gettempdir(), ".mcp-snapshots")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except Exception:
+        out_dir = tempfile.gettempdir()
+    path = (args.get("path") or "").strip()
+    if not path:
+        path = os.path.join(out_dir, f"snap-{time.strftime('%Y%m%d-%H%M%S')}.png")
+    if not _capture_screen(path):
+        return {"ok": False, "error": "截图失败。macOS 请在 系统设置→隐私与安全→屏幕录制 中为网关终端授权；或检查 screencapture/相关工具。", "path": path}
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+    except Exception as e:
+        return {"ok": False, "error": f"读取截图失败: {e}", "path": path}
+    return {"ok": True, "path": path, "image": b64, "mimeType": "image/png",
+            "note": "截图已在 image 字段（可看图），同时保存到 " + path}
+
+
+def _tail_file(path, lines=50):
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            data = f.read()
+    except Exception as e:
+        return f"(读取失败: {e})"
+    tail = data.splitlines()[-max(1, int(lines)):]
+    return "\n".join(tail)
+
+
+def handle_run_long(args):
+    command = (args.get("command") or "").strip()
+    if not command:
+        return {"ok": False, "error": "需要 command"}
+    workspace = _workspace_path()
+    tasks_dir = os.path.join(workspace, ".mcp-tasks") if workspace else tempfile.gettempdir()
+
+    def _spawn():
+        try:
+            os.makedirs(tasks_dir, exist_ok=True)
+        except Exception:
+            pass
+        with LONG_TASKS_LOCK:
+            LONG_TASK_COUNTER[0] += 1
+            task_id = f"task-{LONG_TASK_COUNTER[0]}"
+        log_path = os.path.join(tasks_dir, f"{task_id}.log")
+        with LONG_TASKS_LOCK:
+            LONG_TASKS[task_id] = {"running": True, "logPath": log_path, "command": command, "workspace": workspace}
+
+        def _bg():
+            try:
+                popen_kwargs = {}
+                if os.name == "nt":
+                    popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+                else:
+                    popen_kwargs["start_new_session"] = True
+                with open(log_path, "w", encoding="utf-8") as logf:
+                    proc = subprocess.Popen(command, shell=True, cwd=workspace or None,
+                                            stdout=logf, stderr=subprocess.STDOUT, **popen_kwargs)
+                    with LONG_TASKS_LOCK:
+                        t = LONG_TASKS.get(task_id)
+                        if t:
+                            t["proc"] = proc
+                            t["pid"] = proc.pid
+                    proc.wait()
+                    with LONG_TASKS_LOCK:
+                        t = LONG_TASKS.get(task_id)
+                        if t:
+                            t["running"] = False
+                            t["exit"] = proc.returncode
+                    logf.flush()
+            except Exception as e:
+                with LONG_TASKS_LOCK:
+                    t = LONG_TASKS.get(task_id)
+                    if t:
+                        t["running"] = False
+                        t["error"] = str(e)
+                write_ui_log(f"[run_long] {task_id} error: {e}")
+
+        threading.Thread(target=_bg, daemon=True).start()
+        return task_id, log_path
+
+    task_id, log_path = _spawn()
+    write_ui_log(f"[run_long] 启动后台任务 {task_id}: {command[:80]}")
+    try:
+        start_offset = os.path.getsize(log_path) if os.path.exists(log_path) else 0
+    except Exception:
+        start_offset = 0
+    return {"ok": True, "taskId": task_id, "logPath": log_path,
+            "tail": _tail_file(log_path, int(args.get("lines", 20))),
+            "start_offset": start_offset,
+            "message": "已后台启动，未被 502 超时限制。用 tail_follow(path, start_offset=start_offset) 看新增，task_status 查状态。"}
+
+
+def handle_task_status(args):
+    task_id = (args.get("taskId") or "").strip()
+    with LONG_TASKS_LOCK:
+        t = LONG_TASKS.get(task_id)
+    if not t:
+        return {"ok": False, "error": f"未知任务: {task_id}"}
+    result = {"ok": True, "taskId": task_id, "running": t.get("running", False),
+              "exit": t.get("exit"), "pid": t.get("pid"), "command": t.get("command", "")}
+    if t.get("error"):
+        result["error"] = t["error"]
+    result["logPath"] = t.get("logPath", "")
+    result["tail"] = _tail_file(t.get("logPath", ""), int(args.get("lines", 50)))
+    return result
+
+
+def handle_tail_log(args):
+    path = (args.get("path") or "").strip()
+    lines = int(args.get("lines", 50))
+    return {"ok": True, "path": path, "tail": _tail_file(path, lines)}
+
+
+def _run_capture(cmd, timeout=6):
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return {"ok": proc.returncode == 0, "out": proc.stdout or "", "err": proc.stderr or ""}
+    except Exception as e:
+        return {"ok": False, "out": "", "err": str(e)}
+
+
+def handle_status_overview(args):
+    state = get_state() or {}
+    cfg = get_persistent_config() or {}
+    workspace = _workspace_path()
+    lines = int(args.get("lines", 20))
+    result = {
+        "ok": True,
+        "mode": state.get("mode") or cfg.get("mode", "quick"),
+        "workspace": workspace,
+        "tunnelUrl": state.get("tunnelUrl", ""),
+    }
+    if workspace:
+        branch = _run_capture(["git", "-C", workspace, "rev-parse", "--abbrev-ref", "HEAD"])
+        if branch["ok"]:
+            result["gitBranch"] = branch["out"].strip()
+            dirty = _run_capture(["git", "-C", workspace, "status", "--porcelain", "-uno"])
+            result["gitDirty"] = bool(dirty["out"].strip()) if dirty["ok"] else False
+            diffstat = _run_capture(["git", "-C", workspace, "diff", "--stat"])
+            if diffstat["ok"] and diffstat["out"].strip():
+                result["gitDiffStat"] = diffstat["out"].strip()[:2000]
+        else:
+            result["git"] = "not a git repo"
+    with LONG_TASKS_LOCK:
+        tasks = [{
+            "taskId": k,
+            "running": v.get("running", False),
+            "exit": v.get("exit"),
+            "command": (v.get("command") or "")[:120],
+            "tail": _tail_file(v.get("logPath", ""), lines),
+        } for k, v in LONG_TASKS.items()]
+    result["tasks"] = tasks
+    with log_lock:
+        result["gatewayLogs"] = list(LOG_BUFFER)[-lines:]
+    return result
+
+
+def _read_from_offset(path, start_offset, wait_seconds, poll_interval=0.3):
+    deadline = time.time() + wait_seconds
+    while True:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return "", 0, False
+        if size < start_offset:
+            start_offset = 0
+        if size > start_offset:
+            with open(path, "rb") as f:
+                f.seek(start_offset)
+                data = f.read()
+            return data.decode("utf-8", errors="replace"), size, True
+        if time.time() >= deadline:
+            return "", start_offset, False
+        time.sleep(poll_interval)
+
+
+def handle_tail_follow(args):
+    path = (args.get("path") or "").strip()
+    if not path:
+        return {"ok": False, "error": "需要 path"}
+    if not os.path.exists(path):
+        return {"ok": False, "error": f"文件不存在: {path}", "path": path}
+    start_offset = int(args.get("start_offset", 0))
+    wait_seconds = float(args.get("wait_seconds", 2.0))
+    if start_offset <= 0 and int(args.get("lines", 0)) > 0:
+        tail = _tail_file(path, int(args.get("lines", 30)))
+        start_offset = os.path.getsize(path)
+        return {"ok": True, "path": path, "new": tail, "start_offset": start_offset,
+                "end_offset": start_offset, "mode": "seed", "following": True}
+    content, end_offset, grew = _read_from_offset(path, start_offset, wait_seconds)
+    return {"ok": True, "path": path, "new": content, "start_offset": start_offset,
+            "end_offset": end_offset, "grew": grew, "following": True}
+
+
+def handle_kill_task(args):
+    task_id = (args.get("taskId") or "").strip()
+    with LONG_TASKS_LOCK:
+        t = LONG_TASKS.get(task_id)
+    if not t:
+        return {"ok": False, "error": f"未知任务: {task_id}"}
+    proc = t.get("proc")
+    if not proc:
+        return {"ok": False, "error": "任务进程信息缺失"}
+    alive = proc.poll() is None
+    if not alive:
+        with LONG_TASKS_LOCK:
+            t["running"] = False
+        return {"ok": False, "error": "任务已结束"}
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                           capture_output=True, timeout=15)
+        else:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except ProcessLookupError:
+                proc.kill()
+        with LONG_TASKS_LOCK:
+            t["running"] = False
+            t["killed"] = True
+        write_ui_log(f"[kill_task] 已终止 {task_id} (pid {proc.pid})")
+        return {"ok": True, "taskId": task_id, "message": "已终止任务（含子进程）"}
+    except Exception as e:
+        try:
+            proc.kill()
+            with LONG_TASKS_LOCK:
+                t["running"] = False
+                t["killed"] = True
+            return {"ok": True, "taskId": task_id, "message": f"已 kill（回退方式: {e}）"}
+        except Exception as e2:
+            return {"ok": False, "error": f"终止失败: {e2}"}
+
+
+def handle_list_tasks(args):
+    removed = 0
+    if args.get("action") == "cleanup":
+        with LONG_TASKS_LOCK:
+            for tid in [k for k, v in LONG_TASKS.items() if not v.get("running")]:
+                lp = LONG_TASKS[tid].get("logPath")
+                if lp and os.path.exists(lp):
+                    try:
+                        os.remove(lp)
+                    except Exception:
+                        pass
+                del LONG_TASKS[tid]
+                removed += 1
+    with LONG_TASKS_LOCK:
+        tasks = [{
+            "taskId": k,
+            "running": v.get("running", False),
+            "exit": v.get("exit"),
+            "killed": v.get("killed", False),
+            "command": (v.get("command") or "")[:120],
+            "logPath": v.get("logPath"),
+        } for k, v in LONG_TASKS.items()]
+    return {"ok": True, "tasks": tasks, "removed": removed}
+
+
+def handle_godot_run(args):
+    godot = (args.get("godotPath") or "").strip() or shutil.which("godot")
+    if not godot:
+        return {"ok": False, "error": "未找到 godot，请将其加入 PATH 或用 godotPath 指定。macOS: brew install --cask godot-mono"}
+    workspace = (args.get("project") or "").strip() or _workspace_path()
+    if not workspace:
+        return {"ok": False, "error": "无工作区，无法定位 Godot 项目"}
+    headless = bool(args.get("headless", True))
+    quit_after = int(args.get("quitAfter", 600))
+    cmd = [godot, "--path", workspace]
+    if headless:
+        cmd.append("--headless")
+    if quit_after > 0:
+        cmd.extend(["--quit-after", str(quit_after)])
+    scene = (args.get("scene") or "").strip()
+    if scene:
+        cmd.append(scene)
+    extra = args.get("args")
+    if isinstance(extra, list):
+        cmd.extend(str(a) for a in extra)
+    timeout = int(args.get("timeout", 120))
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=workspace)
+        ok = proc.returncode == 0
+        return {"ok": ok, "exit": proc.returncode,
+                "stdout": (proc.stdout or "")[-4000:],
+                "stderr": (proc.stderr or "")[-4000:]}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"Godot 运行超过 {timeout}s 未退出",
+                "hint": "项目可能卡在启动；改用 run_long 后台跑再 tail_follow。"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _parse_mcp_response(body):
+    text = body.decode("utf-8", errors="replace")
+    candidates = [text.strip()]
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("data:"):
+            candidates.append(line[5:].strip())
+        elif line.startswith("{"):
+            candidates.append(line)
+    for cand in candidates:
+        if not cand:
+            continue
+        try:
+            return json.loads(cand)
+        except Exception:
+            continue
+    return None
+
+
+def _forward_to_upstream(path, method, headers, body, read_timeout=None):
     state = get_state()
     upstream_port = state.get("port", 8765) if state else 8765
-    url = f"http://127.0.0.1:{upstream_port}{path}"
+    conn = http.client.HTTPConnection("127.0.0.1", upstream_port, timeout=None)
     req_headers = {}
     for k in ("Content-Type", "Accept", "Authorization", "MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"):
         v = headers.get(k) or headers.get(k.lower())
         if v:
             req_headers[k] = v
-    req = urllib.request.Request(url, data=body, headers=req_headers, method=method)
+    req_headers["Host"] = f"127.0.0.1:{upstream_port}"
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.status, dict(resp.headers), resp.read()
-    except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers), e.read()
-    except Exception as e:
-        return 502, {}, json.dumps({"error": str(e)}).encode()
+        conn.request(method, path, body=body, headers=req_headers)
+        resp = conn.getresponse()
+        if read_timeout is not None and conn.sock:
+            conn.sock.settimeout(read_timeout)
+        return conn, resp
+    except Exception:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        raise
 
 
 class McpProxyHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, format, *args):
         pass
 
-    def do_GET(self):
-        status, headers, body = _forward_to_upstream(self.path, "GET", dict(self.headers), None)
+    def _read_full(self, conn, resp):
+        body = resp.read()
+        return resp.status, dict(resp.getheaders()), body
+
+    def _send_simple(self, obj, status=200, content_type="application/json"):
+        payload = obj if isinstance(obj, bytes) else json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
-        for k, v in headers.items():
-            if k.lower() not in ("content-length", "transfer-encoding", "connection"):
-                self.send_header(k, v)
-        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
-        self.wfile.write(body)
+        self.wfile.write(payload)
+
+    def _result_content(self, result):
+        if isinstance(result, dict) and result.get("image"):
+            content = [{"type": "image", "data": result["image"], "mimeType": result.get("mimeType", "image/png")}]
+            if result.get("note"):
+                content.append({"type": "text", "text": result["note"]})
+            return content
+        return [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}]
+
+    def _write_jsonrpc(self, data, result, is_error=False):
+        res = {
+            "content": self._result_content(result),
+            "isError": is_error,
+        }
+        if isinstance(result, dict):
+            res["structuredContent"] = result
+        payload = {"jsonrpc": "2.0", "id": data.get("id"), "result": res}
+        self._send_simple(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+
+    def _stream_pass_through(self, conn, resp):
+        try:
+            self.send_response(resp.status)
+            for k, v in resp.getheaders():
+                kl = k.lower()
+                if kl in ("content-length", "transfer-encoding", "connection"):
+                    continue
+                self.send_header(k, v)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(("%x" % len(chunk)).encode("ascii") + b"\r\n" + chunk + b"\r\n")
+                self.wfile.flush()
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except Exception as e:
+            write_ui_log(f"[proxy] stream error: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _bad_gateway(self, message):
+        self._send_simple({"error": str(message), "detail": "upstream 不可达（非长任务超时）"}, status=502)
+
+    def do_GET(self):
+        try:
+            conn, resp = _forward_to_upstream(self.path, "GET", dict(self.headers), None)
+        except Exception as e:
+            self._bad_gateway(e)
+            return
+        self._stream_pass_through(conn, resp)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -1824,115 +2366,109 @@ class McpProxyHandler(http.server.BaseHTTPRequestHandler):
             data = {}
         method = data.get("method", "")
 
-        if method == "tools/list":
-            status, headers, up_body = _forward_to_upstream(self.path, "POST", dict(self.headers), body)
-            if status != 200:
-                self.send_response(status)
-                for k, v in headers.items():
-                    if k.lower() not in ("content-length", "transfer-encoding", "connection"):
-                        self.send_header(k, v)
-                self.send_header("Content-Length", str(len(up_body)))
-                self.end_headers()
-                self.wfile.write(up_body)
+        # 自定义工具：本地即时处理，不经过 upstream
+        if method == "tools/call":
+            params = data.get("params", {})
+            name = params.get("name", "")
+            args = params.get("arguments", {}) or {}
+            if name == "workspace_context":
+                self._write_jsonrpc(data, handle_workspace_context(), False)
                 return
+            if name == "install_mcp":
+                result = handle_install_mcp(args.get("name", ""), args.get("source", "auto"))
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "screenshot":
+                result = handle_screenshot(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "run_long":
+                result = handle_run_long(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "task_status":
+                result = handle_task_status(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "tail_log":
+                result = handle_tail_log(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "tail_follow":
+                result = handle_tail_follow(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "kill_task":
+                result = handle_kill_task(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "list_tasks":
+                result = handle_list_tasks(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "godot_run":
+                result = handle_godot_run(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            if name == "status_overview":
+                result = handle_status_overview(args)
+                self._write_jsonrpc(data, result, not result.get("ok", False))
+                return
+            with DYNAMIC_TOOLS_LOCK:
+                for t in DYNAMIC_TOOLS:
+                    if t.get("name") == name:
+                        result = {"ok": True, "message": f"扩展工具 {name} 已安装，请用 exec_command 调用其 CLI。", "detail": t}
+                        self._write_jsonrpc(data, result, False)
+                        return
+
+        # tools/list：注入自定义工具
+        if method == "tools/list":
             try:
-                up_json = json.loads(up_body)
+                conn, resp = _forward_to_upstream(self.path, "POST", dict(self.headers), body, read_timeout=30)
+                status, headers, up_body = self._read_full(conn, resp)
+                if status != 200:
+                    self._forward_raw(status, headers, up_body, conn)
+                    return
+                up_json = _parse_mcp_response(up_body)
+                if up_json is None or "result" not in up_json:
+                    self._forward_raw(status, headers, up_body, conn)
+                    return
                 tools = up_json.get("result", {}).get("tools", [])
-                if not tools and "result" in up_json and isinstance(up_json["result"], dict):
-                    tools = up_json["result"].get("tools", [])
                 with DYNAMIC_TOOLS_LOCK:
                     extra = EXTRA_TOOLS + DYNAMIC_TOOLS
                 for t in extra:
                     if "inputSchema" not in t:
                         t["inputSchema"] = {"type": "object", "properties": {}, "additionalProperties": False}
                 up_json.setdefault("result", {})["tools"] = tools + extra
-                body = json.dumps(up_json, ensure_ascii=False).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self._send_simple(json.dumps(up_json, ensure_ascii=False).encode("utf-8"), content_type="application/json")
+                conn.close()
                 return
-            except Exception:
-                pass
-            self.send_response(status)
-            for k, v in headers.items():
-                if k.lower() not in ("content-length", "transfer-encoding", "connection"):
-                    self.send_header(k, v)
-            self.send_header("Content-Length", str(len(up_body)))
-            self.end_headers()
-            self.wfile.write(up_body)
+            except Exception as e:
+                write_ui_log(f"[proxy] tools/list failed: {e}")
+                self._bad_gateway(e)
+                return
+
+        # 其余一律流式透传（含真实 tools/call 长任务、initialize 等），不再 502
+        try:
+            conn, resp = _forward_to_upstream(self.path, "POST", dict(self.headers), body)
+        except Exception as e:
+            self._bad_gateway(e)
             return
+        self._stream_pass_through(conn, resp)
 
-        if method == "tools/call":
-            params = data.get("params", {})
-            name = params.get("name", "")
-            args = params.get("arguments", {})
-            if name == "workspace_context":
-                result = handle_workspace_context()
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": data.get("id"),
-                    "result": {
-                        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
-                        "structuredContent": result,
-                        "isError": False,
-                    },
-                }
-                body = json.dumps(payload, ensure_ascii=False).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if name == "install_mcp":
-                result = handle_install_mcp(args.get("name", ""), args.get("source", "auto"))
-                is_error = not result.get("ok", False)
-                payload = {
-                    "jsonrpc": "2.0",
-                    "id": data.get("id"),
-                    "result": {
-                        "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
-                        "structuredContent": result,
-                        "isError": is_error,
-                    },
-                }
-                body = json.dumps(payload, ensure_ascii=False).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            # Check dynamic tools
-            with DYNAMIC_TOOLS_LOCK:
-                for t in DYNAMIC_TOOLS:
-                    if t.get("name") == name:
-                        payload = {
-                            "jsonrpc": "2.0",
-                            "id": data.get("id"),
-                            "result": {
-                                "content": [{"type": "text", "text": f"扩展工具 {name} 已安装，请用 exec_command 调用其 CLI。详情: {json.dumps(t, ensure_ascii=False)}"}],
-                                "isError": False,
-                            },
-                        }
-                        body = json.dumps(payload, ensure_ascii=False).encode()
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.send_header("Content-Length", str(len(body)))
-                        self.end_headers()
-                        self.wfile.write(body)
-                        return
-
-        status, headers, up_body = _forward_to_upstream(self.path, "POST", dict(self.headers), body)
+    def _forward_raw(self, status, headers, body, conn=None):
         self.send_response(status)
         for k, v in headers.items():
             if k.lower() not in ("content-length", "transfer-encoding", "connection"):
                 self.send_header(k, v)
-        self.send_header("Content-Length", str(len(up_body)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(up_body)
+        self.wfile.write(body)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):

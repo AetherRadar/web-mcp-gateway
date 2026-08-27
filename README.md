@@ -113,6 +113,26 @@ Web 模式下对话在 ChatGPT 服务端，无法像本地 agent 那样在进程
 - 旧版社区资料（含 linux.do 教程）中的 `--profile full`、`coding-tools-mcp-chatgpt` 等 0.1.x 时代的参数/入口已失效；
 - OAuth 密码 stderr 日志格式（`OAuth authorize password: xxx`）保持不变，健康检查逻辑向前兼容。
 
+## 自用增强工具（网关内置，无需重启）
+
+网关除了透传 coding-tools-mcp 的 18 个工具外，还注入以下**网关级自定义工具**（出现在 `tools/list` 里，调用 `tools/call` 直接执行，不走上游进程）：
+
+| 工具 | 用途 |
+| --- | --- |
+| `workspace_context` | 分析工作区项目类型 / 已装工具链 / 缺失 MCP 能力及安装建议 |
+| `install_mcp` | 后台安装一个 MCP 能力并热更新到工具清单 |
+| `screenshot` | 截取网关电脑的屏幕并以图像返回，供模型**看画面自检**（建模渲染 / 界面 / 报错弹窗是否符合预期）；macOS 首次需授予「屏幕录制」权限，Windows 用 PowerShell 截图，Linux 走 scrot |
+| `run_long` | **后台异步执行长命令**并立即返回 `taskId`，且**顺手返回末尾日志 tail + `start_offset`**，短任务一眼看到进度，无需再调状态；长任务再用 `tail_follow`。绕开代理超时，避免长构建 / 渲染 / 脚本被 502 切断 |
+| `task_status` | 轮询 `run_long` 任务的状态（运行中 / 退出码 / 日志尾部） |
+| `tail_log` | 读取任意文件末尾行（日志 / 编译输出 / stderr），快速定位报错 |
+| `tail_follow` | **实时跟随日志**（类似 `tail -f`）：传上次返回的 `end_offset` 作 `start_offset` 即可拿到新增内容，持续观察长任务 |
+| `kill_task` | 终止一个跑飞的 `run_long` 后台任务（连同其子进程） |
+| `list_tasks` | 列出所有后台任务；`action='cleanup'` 清理已结束任务并删日志 |
+| `godot_run` | 用本机 Godot `--headless --quit-after` 校验项目能否加载、场景脚本是否报错，并抓取输出 |
+| `status_overview` | **一次返回工作区全貌**：git 分支/改动、所有后台任务及其日志尾、网关最近日志。模型开工前调一下，省去连环调用 |
+
+> **关于 502**：网关已把代理层从「整体缓冲 `resp.read()` + 30s 硬超时」改为**逐块流式转发**且对真实 `tools/call` 不设读取超时。长耗时工具、SSE 流式会话不再因超时被切断；只有上游真正不可达时才会返回 502。让模型直接 `run_long` + `task_status` 跑耗时任务即可安心等结果。
+
 ## 许可与致谢
 
 - 本仓库派生自社区项目 **CodingToolsMcpLauncher** 与 **chatgpt-mcp-autoapproval**，运行时依赖 **[xyTom/coding-tools-mcp](https://github.com/xyTom/coding-tools-mcp)**（Apache License 2.0, Coding Tools MCP Contributors）。
